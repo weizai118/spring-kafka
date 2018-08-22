@@ -18,6 +18,7 @@ package org.springframework.kafka.core;
 
 import org.apache.kafka.clients.producer.Producer;
 
+import org.springframework.lang.Nullable;
 import org.springframework.transaction.support.ResourceHolderSynchronization;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -57,14 +58,22 @@ public final class ProducerFactoryUtils {
 				.getResource(producerFactory);
 		if (resourceHolder == null) {
 			Producer<K, V> producer = producerFactory.createProducer();
-			producer.beginTransaction();
+
+			try {
+				producer.beginTransaction();
+			}
+			catch (RuntimeException e) {
+				producer.close();
+				throw e;
+			}
+
 			resourceHolder = new KafkaResourceHolder<K, V>(producer);
 			bindResourceToTransaction(resourceHolder, producerFactory);
 		}
 		return resourceHolder;
 	}
 
-	public static <K, V> void releaseResources(KafkaResourceHolder<K, V> resourceHolder) {
+	public static <K, V> void releaseResources(@Nullable KafkaResourceHolder<K, V> resourceHolder) {
 		if (resourceHolder != null) {
 			resourceHolder.getProducer().close();
 		}
@@ -128,14 +137,17 @@ public final class ProducerFactoryUtils {
 
 		@Override
 		public void afterCompletion(int status) {
-			if (status == TransactionSynchronization.STATUS_COMMITTED) {
-				this.resourceHolder.commit();
+			try {
+				if (status == TransactionSynchronization.STATUS_COMMITTED) {
+					this.resourceHolder.commit();
+				}
+				else {
+					this.resourceHolder.rollback();
+				}
 			}
-			else {
-				this.resourceHolder.rollback();
+			finally {
+				super.afterCompletion(status);
 			}
-
-			super.afterCompletion(status);
 		}
 
 		@Override

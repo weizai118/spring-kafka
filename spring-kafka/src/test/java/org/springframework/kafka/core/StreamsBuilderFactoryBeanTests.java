@@ -37,8 +37,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafkaStreams;
 import org.springframework.kafka.annotation.KafkaStreamsDefaultConfiguration;
+import org.springframework.kafka.config.KafkaStreamsConfiguration;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
 import org.springframework.kafka.test.context.EmbeddedKafka;
-import org.springframework.kafka.test.rule.KafkaEmbedded;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
@@ -80,9 +81,9 @@ public class StreamsBuilderFactoryBeanTests {
 
 	@Configuration
 	@EnableKafkaStreams
-	public static class KafkaStreamsConfiguration {
+	public static class KafkaStreamsConfig {
 
-		@Value("${" + KafkaEmbedded.SPRING_EMBEDDED_KAFKA_BROKERS + "}")
+		@Value("${" + EmbeddedKafkaBroker.SPRING_EMBEDDED_KAFKA_BROKERS + "}")
 		private String brokerAddresses;
 
 		@Bean(name = KafkaStreamsDefaultConfiguration.DEFAULT_STREAMS_BUILDER_BEAN_NAME)
@@ -91,12 +92,12 @@ public class StreamsBuilderFactoryBeanTests {
 		}
 
 		@Bean(name = KafkaStreamsDefaultConfiguration.DEFAULT_STREAMS_CONFIG_BEAN_NAME)
-		public StreamsConfig kStreamsConfigs() {
+		public KafkaStreamsConfiguration kStreamsConfigs() {
 			Map<String, Object> props = new HashMap<>();
 			props.put(StreamsConfig.APPLICATION_ID_CONFIG, APPLICATION_ID);
 			props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, this.brokerAddresses);
 			props.put(StreamsConfig.STATE_DIR_CONFIG, stateStoreDir.toString());
-			return new StreamsConfig(props);
+			return new KafkaStreamsConfiguration(props);
 		}
 
 	}

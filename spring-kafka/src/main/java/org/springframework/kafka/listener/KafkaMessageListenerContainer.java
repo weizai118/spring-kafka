@@ -17,6 +17,7 @@
 package org.springframework.kafka.listener;
 
 import java.lang.reflect.Type;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -57,6 +58,7 @@ import org.springframework.kafka.core.KafkaResourceHolder;
 import org.springframework.kafka.core.ProducerFactoryUtils;
 import org.springframework.kafka.event.ConsumerPausedEvent;
 import org.springframework.kafka.event.ConsumerResumedEvent;
+import org.springframework.kafka.event.ConsumerStoppedEvent;
 import org.springframework.kafka.event.ListenerContainerIdleEvent;
 import org.springframework.kafka.event.NonResponsiveConsumerEvent;
 import org.springframework.kafka.listener.ConsumerSeekAware.ConsumerSeekCallback;
@@ -65,6 +67,7 @@ import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.LogIfLevelEnabled;
 import org.springframework.kafka.support.TopicPartitionInitialOffset;
 import org.springframework.kafka.support.TopicPartitionInitialOffset.SeekPosition;
+import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.kafka.transaction.KafkaAwareTransactionManager;
 import org.springframework.scheduling.SchedulingAwareRunnable;
 import org.springframework.scheduling.TaskScheduler;
@@ -324,6 +327,12 @@ public class KafkaMessageListenerContainer<K, V> extends AbstractMessageListener
 		}
 	}
 
+	private void publishConsumerStoppedEvent() {
+		if (getApplicationEventPublisher() != null) {
+			getApplicationEventPublisher().publishEvent(new ConsumerStoppedEvent(this));
+		}
+	}
+
 	@Override
 	public String toString() {
 		return "KafkaMessageListenerContainer [id=" + getBeanName()
@@ -403,6 +412,8 @@ public class KafkaMessageListenerContainer<K, V> extends AbstractMessageListener
 
 		private final LogIfLevelEnabled commitLogger = new LogIfLevelEnabled(this.logger,
 				this.containerProperties.getCommitLogLevel());
+
+		private final Duration pollTimeout = Duration.ofMillis(this.containerProperties.getPollTimeout());
 
 		private volatile Map<TopicPartition, OffsetMetadata> definedPartitions;
 
@@ -703,7 +714,7 @@ public class KafkaMessageListenerContainer<K, V> extends AbstractMessageListener
 						}
 						publishConsumerPausedEvent(this.consumer.assignment());
 					}
-					ConsumerRecords<K, V> records = this.consumer.poll(this.containerProperties.getPollTimeout());
+					ConsumerRecords<K, V> records = this.consumer.poll(this.pollTimeout);
 					this.lastPoll = System.currentTimeMillis();
 					if (this.consumerPaused && !isPaused()) {
 						if (this.logger.isDebugEnabled()) {
@@ -778,7 +789,12 @@ public class KafkaMessageListenerContainer<K, V> extends AbstractMessageListener
 				((ThreadPoolTaskScheduler) this.taskScheduler).destroy();
 			}
 			this.consumer.close();
+			getAfterRollbackProcessor().clearThreadState();
+			if (this.errorHandler != null) {
+				this.errorHandler.clearThreadState();
+			}
 			this.logger.info("Consumer stopped");
+			publishConsumerStoppedEvent();
 		}
 
 		/**
@@ -912,10 +928,10 @@ public class KafkaMessageListenerContainer<K, V> extends AbstractMessageListener
 			catch (RuntimeException e) {
 				this.logger.error("Transaction rolled back", e);
 				if (recordList == null) {
-					getAfterRollbackProcessor().process(createRecordList(records), this.consumer);
+					getAfterRollbackProcessor().process(createRecordList(records), this.consumer, e, false);
 				}
 				else {
-					getAfterRollbackProcessor().process(recordList, this.consumer);
+					getAfterRollbackProcessor().process(recordList, this.consumer, e, false);
 				}
 			}
 		}
@@ -1065,7 +1081,7 @@ public class KafkaMessageListenerContainer<K, V> extends AbstractMessageListener
 					while (iterator.hasNext()) {
 						unprocessed.add(iterator.next());
 					}
-					getAfterRollbackProcessor().process(unprocessed, this.consumer);
+					getAfterRollbackProcessor().process(unprocessed, this.consumer, e, true);
 				}
 			}
 		}
@@ -1095,6 +1111,12 @@ public class KafkaMessageListenerContainer<K, V> extends AbstractMessageListener
 				@SuppressWarnings("rawtypes") Producer producer,
 				Iterator<ConsumerRecord<K, V>> iterator) throws Error {
 			try {
+				if (record.value() instanceof DeserializationException) {
+					throw (DeserializationException) record.value();
+				}
+				if (record.key() instanceof DeserializationException) {
+					throw (DeserializationException) record.key();
+				}
 				switch (this.listenerType) {
 					case ACKNOWLEDGING_CONSUMER_AWARE:
 						this.listener.onMessage(record,

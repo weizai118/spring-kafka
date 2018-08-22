@@ -33,13 +33,15 @@ import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.annotation.EnableKafkaStreams;
 import org.springframework.kafka.annotation.KafkaStreamsDefaultConfiguration;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
 import org.springframework.kafka.test.context.EmbeddedKafka;
-import org.springframework.kafka.test.rule.KafkaEmbedded;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.junit4.SpringRunner;
 
 /**
  * @author Soby Chacko
+ * @author Artem Bilan
+ * @author Gary Russell
  */
 @RunWith(SpringRunner.class)
 @DirtiesContext
@@ -48,7 +50,7 @@ public class StreamsBuilderFactoryLateConfigTests {
 
 	private static final String APPLICATION_ID = "streamsBuilderFactoryLateConfigTests";
 
-	@Value("${" + KafkaEmbedded.SPRING_EMBEDDED_KAFKA_BROKERS + "}")
+	@Value("${" + EmbeddedKafkaBroker.SPRING_EMBEDDED_KAFKA_BROKERS + "}")
 	private String brokerAddresses;
 
 	@Autowired
@@ -60,7 +62,7 @@ public class StreamsBuilderFactoryLateConfigTests {
 		streamsBuilderFactoryBean.start();
 	}
 
-	@Test(expected = IllegalArgumentException.class)
+	@Test(expected = IllegalStateException.class)
 	public void testStreamBuilderFactoryCannotBeInstantiatedWhenAutoStart() throws Exception {
 		StreamsBuilderFactoryBean streamsBuilderFactoryBean = new StreamsBuilderFactoryBean();
 		streamsBuilderFactoryBean.setAutoStartup(true);
@@ -91,5 +93,7 @@ public class StreamsBuilderFactoryLateConfigTests {
 			streamsBuilderFactoryBean.setAutoStartup(false);
 			return streamsBuilderFactoryBean;
 		}
+
 	}
+
 }

@@ -27,6 +27,53 @@ A new container property `missingTopicsFatal` has been added.
 
 See <<kafka-container>> for more information.
 
+A `ConsumerStoppedEvent` is now emitted when a consumer terminates.
+
+See <<thread-safety>> for more information.
+
 Batch listeners can optionally receive the complete `ConsumerRecords<?, ?>` object instead of a `List<ConsumerRecord<?, ?>`.
 
 See <<batch-listeners>> for more information.
+
+The `DefaultAfterRollbackProcessor` and `SeekToCurrentErrorHandler` can now recover (skip) records that keep failing, and will do so after 10 failures, by default.
+They can be configured to publish failed records to a dead-letter topic.
+
+See <<after-rollback>>, <<seek-to-current>> and <<dead-letters>> for more information.
+
+==== @KafkaListener Changes
+
+You can now override the `concurrency` and `autoStartup` properties of the listener container factory by setting properties on the annotation.
+
+See <<kafka-listener-annotation>> for more information.
+
+==== Header Mapping Changes
+
+Headers of type `MimeType` and `MediaType` are now mapped as simple strings in the `RecordHeader` value.
+Previously, they were mapped as JSON and only `MimeType` was decoded, `MediaType` could not be decoded.
+They are now simple strings for interoperability.
+
+Also, the `DefaultKafkaHeaderMapper` has a new method `addToStringClasses` allowing the specification of types that should be mapped using `toString()` instead of JSON.
+
+See <<headers>> for more information.
+
+==== Embedded Kafka Changes
+
+The `KafkaEmbedded` class and its `KafkaRule` interface have need deprecated in favor of the `EmbeddedKafkaBroker` and its JUnit 4 `EmbeddedKafkaRule` wrapper.
+The `@EmbeddedKafka` annotation now populates an `EmbeddedKafkaBroker` bean instead of the deprecated `KafkaEmbedded`.
+This allows the use of `@EmbeddedKafka` in JUnit 5 tests.
+
+See <<testing>> for more information.
+
+==== JsonSerializer/Deserializer Enhancements
+
+You can now provide type mapping information using producer/consumer properties.
+
+New constructors are available on the deserializer to allow overriding the type header information with the supplied target type.
+
+See <<serdes>> for more information.
+
+==== Kafka Streams Changes
+
+The streams configuration bean must now be a simple `Properties` object instead of a `StreamsConfig`.
+
+See <<kafka-streams>> for more information.

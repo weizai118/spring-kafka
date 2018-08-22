@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -57,7 +58,8 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.ProducerListener;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.kafka.support.converter.MessagingMessageConverter;
-import org.springframework.kafka.test.rule.KafkaEmbedded;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
+import org.springframework.kafka.test.rule.EmbeddedKafkaRule;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
@@ -78,13 +80,16 @@ public class KafkaTemplateTests {
 	private static final String STRING_KEY_TOPIC = "stringKeyTopic";
 
 	@ClassRule
-	public static KafkaEmbedded embeddedKafka = new KafkaEmbedded(1, true, INT_KEY_TOPIC, STRING_KEY_TOPIC);
+	public static EmbeddedKafkaRule embeddedKafkaRule = new EmbeddedKafkaRule(1, true, INT_KEY_TOPIC, STRING_KEY_TOPIC);
+
+	private static EmbeddedKafkaBroker embeddedKafka = embeddedKafkaRule.getEmbeddedKafka();
 
 	private static Consumer<Integer, String> consumer;
 
 	@BeforeClass
 	public static void setUp() throws Exception {
-		Map<String, Object> consumerProps = KafkaTestUtils.consumerProps("testT", "false", embeddedKafka);
+		Map<String, Object> consumerProps = KafkaTestUtils
+				.consumerProps("KafkaTemplatetests" + UUID.randomUUID().toString(), "false", embeddedKafka);
 		consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
 		DefaultKafkaConsumerFactory<Integer, String> cf = new DefaultKafkaConsumerFactory<>(consumerProps);
 		consumer = cf.createConsumer();

@@ -97,9 +97,13 @@ public abstract class AbstractKafkaListenerEndpoint<K, V>
 
 	private boolean batchListener;
 
-	private KafkaTemplate<K, V> replyTemplate;
+	private KafkaTemplate<?, ?> replyTemplate;
 
 	private String clientIdPrefix;
+
+	private Integer concurrency;
+
+	private Boolean autoStartup;
 
 	@Override
 	public void setBeanFactory(BeanFactory beanFactory) throws BeansException {
@@ -252,11 +256,11 @@ public abstract class AbstractKafkaListenerEndpoint<K, V>
 	 * @param replyTemplate the template.
 	 * @since 2.0
 	 */
-	public void setReplyTemplate(KafkaTemplate<K, V> replyTemplate) {
+	public void setReplyTemplate(KafkaTemplate<?, ?> replyTemplate) {
 		this.replyTemplate = replyTemplate;
 	}
 
-	protected KafkaTemplate<K, V> getReplyTemplate() {
+	protected KafkaTemplate<?, ?> getReplyTemplate() {
 		return this.replyTemplate;
 	}
 
@@ -340,6 +344,34 @@ public abstract class AbstractKafkaListenerEndpoint<K, V>
 	 */
 	public void setClientIdPrefix(String clientIdPrefix) {
 		this.clientIdPrefix = clientIdPrefix;
+	}
+
+	@Override
+	public Integer getConcurrency() {
+		return this.concurrency;
+	}
+
+	/**
+	 * Set the concurrency for this endpoint's container.
+	 * @param concurrency the concurrency.
+	 * @since 2.2
+	 */
+	public void setConcurrency(int concurrency) {
+		this.concurrency = concurrency;
+	}
+
+	@Override
+	public Boolean getAutoStartup() {
+		return this.autoStartup;
+	}
+
+	/**
+	 * Set the autoStartup for this endpoint's container.
+	 * @param autoStartup the autoStartup.
+	 * @since 2.2
+	 */
+	public void setAutoStartup(Boolean autoStartup) {
+		this.autoStartup = autoStartup;
 	}
 
 	@Override

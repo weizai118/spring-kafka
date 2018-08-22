@@ -85,7 +85,8 @@ import org.springframework.kafka.support.converter.DefaultJackson2JavaTypeMapper
 import org.springframework.kafka.support.converter.Jackson2JavaTypeMapper;
 import org.springframework.kafka.support.converter.Jackson2JavaTypeMapper.TypePrecedence;
 import org.springframework.kafka.support.converter.StringJsonMessageConverter;
-import org.springframework.kafka.test.rule.KafkaEmbedded;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
+import org.springframework.kafka.test.rule.EmbeddedKafkaRule;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 import org.springframework.lang.NonNull;
 import org.springframework.messaging.Message;
@@ -96,6 +97,7 @@ import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.messaging.support.GenericMessage;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.retry.support.RetryTemplate;
+import org.springframework.stereotype.Component;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
@@ -120,7 +122,7 @@ public class EnableKafkaIntegrationTests {
 	private static final String DEFAULT_TEST_GROUP_ID = "testAnnot";
 
 	@ClassRule
-	public static KafkaEmbedded embeddedKafka = new KafkaEmbedded(1, true,
+	public static EmbeddedKafkaRule embeddedKafkaRule = new EmbeddedKafkaRule(1, true,
 			"annotated1", "annotated2", "annotated3",
 			"annotated4", "annotated5", "annotated6", "annotated7", "annotated8", "annotated9", "annotated10",
 			"annotated11", "annotated12", "annotated13", "annotated14", "annotated15", "annotated16", "annotated17",
@@ -130,9 +132,7 @@ public class EnableKafkaIntegrationTests {
 			"annotated29", "annotated30", "annotated30reply", "annotated31", "annotated32", "annotated33",
 			"annotated34");
 
-//	@Rule
-//	public Log4jLevelAdjuster adjuster = new Log4jLevelAdjuster(Level.TRACE,
-//			"org.springframework.kafka", "org.apache.kafka.clients.consumer");
+	private static EmbeddedKafkaBroker embeddedKafka = embeddedKafkaRule.getEmbeddedKafka();
 
 	@Autowired
 	private Config config;
@@ -180,6 +180,7 @@ public class EnableKafkaIntegrationTests {
 		List<?> containers = KafkaTestUtils.getPropertyValue(container, "containers", List.class);
 		assertThat(KafkaTestUtils.getPropertyValue(containers.get(0), "listenerConsumer.consumerGroupId"))
 				.isEqualTo(DEFAULT_TEST_GROUP_ID);
+		container.stop();
 	}
 
 	@Test
@@ -256,6 +257,13 @@ public class EnableKafkaIntegrationTests {
 		assertThat(KafkaTestUtils.getPropertyValue(fizContainer, "listenerConsumer.consumer.clientId"))
 				.isEqualTo("clientIdViaAnnotation-0");
 
+		MessageListenerContainer rebalanceConcurrentContainer = registry.getListenerContainer("rebalanceListener");
+		assertThat(rebalanceConcurrentContainer).isNotNull();
+		assertThat(rebalanceConcurrentContainer.isAutoStartup()).isFalse();
+		assertThat(KafkaTestUtils.getPropertyValue(rebalanceConcurrentContainer, "concurrency", Integer.class))
+				.isEqualTo(3);
+		rebalanceConcurrentContainer.start();
+
 		template.send("annotated11", 0, "foo");
 		assertThat(this.listener.latch7.await(60, TimeUnit.SECONDS)).isTrue();
 		assertThat(this.consumerRef.get()).isNotNull();
@@ -267,19 +275,16 @@ public class EnableKafkaIntegrationTests {
 		assertThat(this.listener.latch7a.await(60, TimeUnit.SECONDS)).isTrue();
 		assertThat(this.listener.latch7String).isNull();
 
-		MessageListenerContainer rebalanceConcurrentContainer = registry.getListenerContainer("rebalanceListener");
-		assertThat(rebalanceConcurrentContainer).isNotNull();
 		MessageListenerContainer rebalanceContainer = (MessageListenerContainer) KafkaTestUtils
 				.getPropertyValue(rebalanceConcurrentContainer, "containers", List.class).get(0);
 		assertThat(KafkaTestUtils.getPropertyValue(rebalanceContainer, "listenerConsumer.consumer.coordinator.groupId"))
 				.isNotEqualTo("rebalanceListener");
 		String clientId = KafkaTestUtils.getPropertyValue(rebalanceContainer, "listenerConsumer.consumer.clientId",
-			String.class);
+				String.class);
 		assertThat(
 				clientId)
-				.startsWith("consumer-");
+				.startsWith("rebal-");
 		assertThat(clientId.indexOf('-')).isEqualTo(clientId.lastIndexOf('-'));
-
 	}
 
 	@Test
@@ -685,7 +690,7 @@ public class EnableKafkaIntegrationTests {
 
 		@Bean
 		public KafkaListenerContainerFactory<ConcurrentMessageListenerContainer<Integer, String>>
-				kafkaListenerContainerFactory() {
+		kafkaListenerContainerFactory() {
 			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
 			factory.setConsumerFactory(consumerFactory());
@@ -700,7 +705,7 @@ public class EnableKafkaIntegrationTests {
 
 		@Bean
 		public KafkaListenerContainerFactory<ConcurrentMessageListenerContainer<Integer, String>>
-				withNoReplyTemplateContainerFactory() {
+		withNoReplyTemplateContainerFactory() {
 			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
 			factory.setConsumerFactory(consumerFactory());
@@ -793,7 +798,7 @@ public class EnableKafkaIntegrationTests {
 		public KafkaListenerContainerFactory<?> batchManualFactory() {
 			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
-			factory.setConsumerFactory(manualConsumerFactory("clientIdViaProps1"));
+			factory.setConsumerFactory(configuredConsumerFactory("clientIdViaProps1"));
 			ContainerProperties props = factory.getContainerProperties();
 			props.setAckMode(AckMode.MANUAL_IMMEDIATE);
 			factory.setBatchListener(true);
@@ -804,7 +809,7 @@ public class EnableKafkaIntegrationTests {
 		public KafkaListenerContainerFactory<?> batchManualFactory2() {
 			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
-			factory.setConsumerFactory(manualConsumerFactory("clientIdViaProps2"));
+			factory.setConsumerFactory(configuredConsumerFactory("clientIdViaProps2"));
 			ContainerProperties props = factory.getContainerProperties();
 			props.setAckMode(AckMode.MANUAL_IMMEDIATE);
 			factory.setBatchListener(true);
@@ -814,9 +819,10 @@ public class EnableKafkaIntegrationTests {
 		@Bean
 		public KafkaListenerContainerFactory<ConcurrentMessageListenerContainer<Integer, String>>
 				kafkaManualAckListenerContainerFactory() {
+
 			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
-			factory.setConsumerFactory(manualConsumerFactory("clientIdViaProps3"));
+			factory.setConsumerFactory(configuredConsumerFactory("clientIdViaProps3"));
 			ContainerProperties props = factory.getContainerProperties();
 			props.setAckMode(AckMode.MANUAL_IMMEDIATE);
 			props.setIdleEventInterval(100L);
@@ -830,6 +836,7 @@ public class EnableKafkaIntegrationTests {
 		@Bean
 		public KafkaListenerContainerFactory<ConcurrentMessageListenerContainer<Integer, String>>
 				kafkaAutoStartFalseListenerContainerFactory() {
+
 			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
 			ContainerProperties props = factory.getContainerProperties();
@@ -844,10 +851,12 @@ public class EnableKafkaIntegrationTests {
 		@Bean
 		public KafkaListenerContainerFactory<ConcurrentMessageListenerContainer<Integer, String>>
 				kafkaRebalanceListenerContainerFactory() {
+
 			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
 			ContainerProperties props = factory.getContainerProperties();
-			factory.setConsumerFactory(consumerFactory());
+			factory.setAutoStartup(true);
+			factory.setConsumerFactory(configuredConsumerFactory("rebal"));
 			props.setConsumerRebalanceListener(consumerRebalanceListener(consumerRef()));
 			return factory;
 		}
@@ -858,7 +867,7 @@ public class EnableKafkaIntegrationTests {
 
 			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
-			factory.setConsumerFactory(manualConsumerFactory("clientIdViaProps4"));
+			factory.setConsumerFactory(configuredConsumerFactory("clientIdViaProps4"));
 			ContainerProperties props = factory.getContainerProperties();
 			props.setAckMode(AckMode.RECORD);
 			props.setAckOnError(true);
@@ -871,10 +880,11 @@ public class EnableKafkaIntegrationTests {
 			return new DefaultKafkaConsumerFactory<>(consumerConfigs());
 		}
 
-		private ConsumerFactory<Integer, String> manualConsumerFactory(String clientId) {
+		private ConsumerFactory<Integer, String> configuredConsumerFactory(String clientAndGroupId) {
 			Map<String, Object> configs = consumerConfigs();
 			configs.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-			configs.put(ConsumerConfig.CLIENT_ID_CONFIG, clientId);
+			configs.put(ConsumerConfig.CLIENT_ID_CONFIG, clientAndGroupId);
+			configs.put(ConsumerConfig.GROUP_ID_CONFIG, clientAndGroupId);
 			return new DefaultKafkaConsumerFactory<>(configs);
 		}
 
@@ -1010,8 +1020,8 @@ public class EnableKafkaIntegrationTests {
 				this.listen3Exception = e;
 				MessageHeaders headers = m.getHeaders();
 				c.seek(new org.apache.kafka.common.TopicPartition(
-						headers.get(KafkaHeaders.RECEIVED_TOPIC, String.class),
-						headers.get(KafkaHeaders.RECEIVED_PARTITION_ID, Integer.class)),
+								headers.get(KafkaHeaders.RECEIVED_TOPIC, String.class),
+								headers.get(KafkaHeaders.RECEIVED_PARTITION_ID, Integer.class)),
 						headers.get(KafkaHeaders.OFFSET, Long.class));
 				return null;
 			};
@@ -1100,6 +1110,7 @@ public class EnableKafkaIntegrationTests {
 
 	}
 
+	@Component
 	static class Listener implements ConsumerSeekAware {
 
 		private final ThreadLocal<ConsumerSeekCallback> seekCallBack = new ThreadLocal<>();
@@ -1269,7 +1280,8 @@ public class EnableKafkaIntegrationTests {
 		}
 
 		@KafkaListener(id = "rebalanceListener", topics = "annotated11", idIsGroup = false,
-				containerFactory = "kafkaRebalanceListenerContainerFactory")
+				containerFactory = "kafkaRebalanceListenerContainerFactory", autoStartup = "${foobarbaz:false}",
+				concurrency = "${fixbux:3}")
 		public void listen7(@Payload(required = false) String foo) {
 			this.latch7String = foo;
 			this.latch7.countDown();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 the original author or authors.
+ * Copyright 2017-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import org.springframework.beans.factory.UnsatisfiedDependencyException;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.KafkaStreamsConfiguration;
 import org.springframework.kafka.core.StreamsBuilderFactoryBean;
 
 /**
@@ -35,6 +36,7 @@ import org.springframework.kafka.core.StreamsBuilderFactoryBean;
  * annotation. See {@link EnableKafkaStreams} Javadoc for complete usage.
  *
  * @author Artem Bilan
+ * @author Gary Russell
  *
  * @since 1.1.4
  */
@@ -54,16 +56,18 @@ public class KafkaStreamsDefaultConfiguration {
 
 	@Bean(name = DEFAULT_STREAMS_BUILDER_BEAN_NAME)
 	public StreamsBuilderFactoryBean defaultKafkaStreamsBuilder(
-			@Qualifier(DEFAULT_STREAMS_CONFIG_BEAN_NAME) ObjectProvider<StreamsConfig> streamsConfigProvider) {
-		StreamsConfig streamsConfig = streamsConfigProvider.getIfAvailable();
+			@Qualifier(DEFAULT_STREAMS_CONFIG_BEAN_NAME)
+				ObjectProvider<KafkaStreamsConfiguration> streamsConfigProvider) {
+
+		KafkaStreamsConfiguration streamsConfig = streamsConfigProvider.getIfAvailable();
 		if (streamsConfig != null) {
 			return new StreamsBuilderFactoryBean(streamsConfig);
 		}
 		else {
 			throw new UnsatisfiedDependencyException(KafkaStreamsDefaultConfiguration.class.getName(),
 					DEFAULT_STREAMS_BUILDER_BEAN_NAME, "streamsConfig", "There is no '" +
-					DEFAULT_STREAMS_CONFIG_BEAN_NAME + "' StreamsConfig bean in the application context.\n" +
-					"Consider to declare one or don't use @EnableKafkaStreams.");
+					DEFAULT_STREAMS_CONFIG_BEAN_NAME + "' Properties bean in the application context.\n" +
+					"Consider declaring one or don't use @EnableKafkaStreams.");
 		}
 	}
 

@@ -418,6 +418,14 @@ public class KafkaListenerAnnotationBeanPostProcessor<K, V>
 				endpoint.setGroup((String) resolvedGroup);
 			}
 		}
+		String concurrency = kafkaListener.concurrency();
+		if (StringUtils.hasText(concurrency)) {
+			endpoint.setConcurrency(resolveExpressionAsInteger(concurrency, "concurrency"));
+		}
+		String autoStartup = kafkaListener.autoStartup();
+		if (StringUtils.hasText(autoStartup)) {
+			endpoint.setAutoStartup(resolveExpressionAsBoolean(autoStartup, "autoStartup"));
+		}
 
 		KafkaListenerContainerFactory<?> factory = null;
 		String containerFactoryBeanName = resolve(kafkaListener.containerFactory());
@@ -637,6 +645,37 @@ public class KafkaListenerAnnotationBeanPostProcessor<K, V>
 		else {
 			throw new IllegalStateException("The [" + attribute + "] must resolve to a String. "
 					+ "Resolved to [" + resolved.getClass() + "] for [" + value + "]");
+		}
+	}
+
+	private int resolveExpressionAsInteger(String value, String attribute) {
+		Object resolved = resolveExpression(value);
+		if (resolved instanceof String) {
+			return Integer.parseInt((String) resolved);
+		}
+		else if (resolved instanceof Number) {
+			return ((Number) resolved).intValue();
+		}
+		else {
+			throw new IllegalStateException(
+					"The [" + attribute + "] must resolve to an Number or a String that can be parsed as an Integer. "
+							+ "Resolved to [" + resolved.getClass() + "] for [" + value + "]");
+		}
+	}
+
+	private boolean resolveExpressionAsBoolean(String value, String attribute) {
+		Object resolved = resolveExpression(value);
+		if (resolved instanceof Boolean) {
+			return (Boolean) resolved;
+		}
+		else if (resolved instanceof String) {
+			final String s = (String) resolved;
+			return Boolean.parseBoolean(s);
+		}
+		else {
+			throw new IllegalStateException(
+					"The [" + attribute + "] must resolve to a Boolean or a String that can be parsed as a Boolean. "
+							+ "Resolved to [" + resolved.getClass() + "] for [" + value + "]");
 		}
 	}
 

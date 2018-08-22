@@ -18,11 +18,13 @@ package org.springframework.kafka.annotation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -44,17 +46,21 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.converter.BatchMessagingMessageConverter;
 import org.springframework.kafka.support.converter.BytesJsonMessageConverter;
-import org.springframework.kafka.test.rule.KafkaEmbedded;
+import org.springframework.kafka.test.rule.EmbeddedKafkaRule;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.handler.annotation.Header;
+import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.messaging.support.GenericMessage;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 
 /**
  * @author Gary Russell
+ * @author Artem Bilan
+ *
  * @since 1.3.2
  *
  */
@@ -66,7 +72,8 @@ public class BatchListenerConversionTests {
 	private static final String DEFAULT_TEST_GROUP_ID = "blc";
 
 	@ClassRule // one topic to preserve order
-	public static KafkaEmbedded embeddedKafka = new KafkaEmbedded(1, true, 1, "blc1", "blc2", "blc3");
+	public static EmbeddedKafkaRule embeddedKafka = new EmbeddedKafkaRule(1, true, 1, "blc1", "blc2", "blc3",
+			"blc4", "blc5");
 
 	@Autowired
 	private Config config;
@@ -108,29 +115,47 @@ public class BatchListenerConversionTests {
 		assertThat(listener.received.get(0).getPayload().getBar()).isEqualTo("bar");
 	}
 
+	@Test
+	public void testBatchReplies() throws Exception {
+		Listener4 listener = this.config.listener4();
+		String topic = "blc4";
+		this.template.send(new GenericMessage<>(
+				new Foo("bar"), Collections.singletonMap(KafkaHeaders.TOPIC, topic)));
+		this.template.send(new GenericMessage<>(
+				new Foo("baz"), Collections.singletonMap(KafkaHeaders.TOPIC, topic)));
+		assertThat(listener.latch1.await(10, TimeUnit.SECONDS)).isTrue();
+		assertThat(listener.received.size()).isGreaterThan(0);
+		assertThat(listener.received.get(0)).isInstanceOf(Foo.class);
+		assertThat(listener.received.get(0).bar).isEqualTo("bar");
+		assertThat(listener.replies.size()).isGreaterThan(0);
+		assertThat(listener.replies.get(0)).isInstanceOf(Foo.class);
+		assertThat(listener.replies.get(0).bar).isEqualTo("BAR");
+	}
+
 	@Configuration
 	@EnableKafka
 	public static class Config {
 
 		@Bean
 		public KafkaListenerContainerFactory<?> kafkaListenerContainerFactory() {
-			ConcurrentKafkaListenerContainerFactory<Integer, String> factory =
+			ConcurrentKafkaListenerContainerFactory<Integer, Foo> factory =
 					new ConcurrentKafkaListenerContainerFactory<>();
 			factory.setConsumerFactory(consumerFactory());
 			factory.setBatchListener(true);
 			factory.setMessageConverter(new BatchMessagingMessageConverter(converter()));
+			factory.setReplyTemplate(template());
 			return factory;
 		}
 
 		@Bean
-		public DefaultKafkaConsumerFactory<Integer, String> consumerFactory() {
+		public DefaultKafkaConsumerFactory<Integer, Foo> consumerFactory() {
 			return new DefaultKafkaConsumerFactory<>(consumerConfigs());
 		}
 
 		@Bean
 		public Map<String, Object> consumerConfigs() {
 			Map<String, Object> consumerProps =
-					KafkaTestUtils.consumerProps(DEFAULT_TEST_GROUP_ID, "false", embeddedKafka);
+					KafkaTestUtils.consumerProps(DEFAULT_TEST_GROUP_ID, "false", embeddedKafka.getEmbeddedKafka());
 			consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, BytesDeserializer.class);
 			consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
 			return consumerProps;
@@ -155,7 +180,7 @@ public class BatchListenerConversionTests {
 
 		@Bean
 		public Map<String, Object> producerConfigs() {
-			Map<String, Object> props = KafkaTestUtils.producerProps(embeddedKafka);
+			Map<String, Object> props = KafkaTestUtils.producerProps(embeddedKafka.getEmbeddedKafka());
 			props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, BytesSerializer.class);
 			return props;
 		}
@@ -173,6 +198,11 @@ public class BatchListenerConversionTests {
 		@Bean
 		public Listener3 listener3() {
 			return new Listener3();
+		}
+
+		@Bean
+		public Listener4 listener4() {
+			return new Listener4();
 		}
 
 	}
@@ -229,6 +259,35 @@ public class BatchListenerConversionTests {
 			if (this.received == null) {
 				this.received = foos;
 			}
+			this.latch1.countDown();
+		}
+
+	}
+
+	public static class Listener4 {
+
+		private final CountDownLatch latch1 = new CountDownLatch(1);
+
+		private List<Foo> received;
+
+		private List<Foo> replies;
+
+		@KafkaListener(topics = "blc4", groupId = "blc4")
+		@SendTo
+		public Collection<Message<?>> listen1(List<Foo> foos) {
+			if (this.received == null) {
+				this.received = foos;
+			}
+			return foos.stream().map(f -> MessageBuilder.withPayload(new Foo(f.getBar().toUpperCase()))
+					.setHeader(KafkaHeaders.TOPIC, "blc5")
+					.setHeader(KafkaHeaders.MESSAGE_KEY, 42)
+					.build())
+					.collect(Collectors.toList());
+		}
+
+		@KafkaListener(topics = "blc5", groupId = "blc5")
+		public void listen2(List<Foo> foos) {
+			this.replies = foos;
 			this.latch1.countDown();
 		}
 

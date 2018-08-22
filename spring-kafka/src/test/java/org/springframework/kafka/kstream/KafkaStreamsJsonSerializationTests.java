@@ -28,9 +28,9 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.Serde;
-import org.apache.kafka.streams.Consumed;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.KStream;
 import org.apache.kafka.streams.kstream.Printed;
 import org.apache.kafka.streams.kstream.Produced;
@@ -45,14 +45,15 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafkaStreams;
 import org.springframework.kafka.annotation.KafkaStreamsDefaultConfiguration;
+import org.springframework.kafka.config.KafkaStreamsConfiguration;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.JsonSerde;
 import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
 import org.springframework.kafka.test.context.EmbeddedKafka;
-import org.springframework.kafka.test.rule.KafkaEmbedded;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.junit4.SpringRunner;
@@ -86,7 +87,7 @@ public class KafkaStreamsJsonSerializationTests {
 	private KafkaTemplate<Object, Object> template;
 
 	@Autowired
-	private KafkaEmbedded kafkaEmbedded;
+	private EmbeddedKafkaBroker embeddedKafka;
 
 	private Consumer<JsonObjectKey, JsonObjectValue> objectOutputTopicConsumer;
 
@@ -119,13 +120,13 @@ public class KafkaStreamsJsonSerializationTests {
 
 	private <K, V> Consumer<K, V> consumer(String topic, Serde<K> keySerde, Serde<V> valueSerde) throws Exception {
 		Map<String, Object> consumerProps =
-				KafkaTestUtils.consumerProps(UUID.randomUUID().toString(), "false", this.kafkaEmbedded);
+				KafkaTestUtils.consumerProps(UUID.randomUUID().toString(), "false", this.embeddedKafka);
 		consumerProps.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 10000);
 
 		DefaultKafkaConsumerFactory<K, V> kafkaConsumerFactory =
 				new DefaultKafkaConsumerFactory<>(consumerProps, keySerde.deserializer(), valueSerde.deserializer());
 		Consumer<K, V> consumer = kafkaConsumerFactory.createConsumer();
-		this.kafkaEmbedded.consumeFromAnEmbeddedTopic(consumer, topic);
+		this.embeddedKafka.consumeFromAnEmbeddedTopic(consumer, topic);
 		return consumer;
 	}
 
@@ -181,7 +182,7 @@ public class KafkaStreamsJsonSerializationTests {
 	@EnableKafkaStreams
 	public static class Config {
 
-		@Value("${" + KafkaEmbedded.SPRING_EMBEDDED_KAFKA_BROKERS + "}")
+		@Value("${" + EmbeddedKafkaBroker.SPRING_EMBEDDED_KAFKA_BROKERS + "}")
 		private String brokerAddresses;
 
 		@Bean
@@ -203,11 +204,11 @@ public class KafkaStreamsJsonSerializationTests {
 		}
 
 		@Bean(name = KafkaStreamsDefaultConfiguration.DEFAULT_STREAMS_CONFIG_BEAN_NAME)
-		public StreamsConfig kStreamsConfigs() {
+		public KafkaStreamsConfiguration kStreamsConfigs() {
 			Map<String, Object> props = new HashMap<>();
 			props.put(StreamsConfig.APPLICATION_ID_CONFIG, "testStreams");
 			props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, this.brokerAddresses);
-			return new StreamsConfig(props);
+			return new KafkaStreamsConfiguration(props);
 		}
 
 		@Bean

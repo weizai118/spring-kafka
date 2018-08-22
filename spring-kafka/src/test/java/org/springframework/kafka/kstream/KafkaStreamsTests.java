@@ -53,6 +53,7 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.annotation.KafkaStreamsDefaultConfiguration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.KafkaListenerContainerFactory;
+import org.springframework.kafka.config.KafkaStreamsConfiguration;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
@@ -61,8 +62,8 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.core.StreamsBuilderFactoryBean;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.support.serializer.JsonSerde;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
 import org.springframework.kafka.test.context.EmbeddedKafka;
-import org.springframework.kafka.test.rule.KafkaEmbedded;
 import org.springframework.kafka.test.utils.KafkaTestUtils;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
@@ -106,16 +107,16 @@ public class KafkaStreamsTests {
 	private StreamsBuilderFactoryBean streamsBuilderFactoryBean;
 
 	@Autowired
-	private KafkaEmbedded kafkaEmbedded;
+	private EmbeddedKafkaBroker embeddedKafka;
 
 	@Value("${streaming.topic.two}")
 	private String streamingTopic2;
 
 	@Test
 	public void testKStreams() throws Exception {
-		assertThat(this.kafkaEmbedded.getKafkaServer(0).config().autoCreateTopicsEnable()).isFalse();
-		assertThat(this.kafkaEmbedded.getKafkaServer(0).config().deleteTopicEnable()).isTrue();
-		assertThat(this.kafkaEmbedded.getKafkaServer(0).config().brokerId()).isEqualTo(2);
+		assertThat(this.embeddedKafka.getKafkaServer(0).config().autoCreateTopicsEnable()).isFalse();
+		assertThat(this.embeddedKafka.getKafkaServer(0).config().deleteTopicEnable()).isTrue();
+		assertThat(this.embeddedKafka.getKafkaServer(0).config().brokerId()).isEqualTo(2);
 
 		this.streamsBuilderFactoryBean.stop();
 
@@ -153,9 +154,9 @@ public class KafkaStreamsTests {
 	@Configuration
 	@EnableKafka
 	@EnableKafkaStreams
-	public static class KafkaStreamsConfiguration {
+	public static class KafkaStreamsConfig {
 
-		@Value("${" + KafkaEmbedded.SPRING_EMBEDDED_KAFKA_BROKERS + "}")
+		@Value("${" + EmbeddedKafkaBroker.SPRING_EMBEDDED_KAFKA_BROKERS + "}")
 		private String brokerAddresses;
 
 		@Value("${streaming.topic.two}")
@@ -179,7 +180,7 @@ public class KafkaStreamsTests {
 		}
 
 		@Bean(name = KafkaStreamsDefaultConfiguration.DEFAULT_STREAMS_CONFIG_BEAN_NAME)
-		public StreamsConfig kStreamsConfigs() {
+		public KafkaStreamsConfiguration kStreamsConfigs() {
 			Map<String, Object> props = new HashMap<>();
 			props.put(StreamsConfig.APPLICATION_ID_CONFIG, "testStreams");
 			props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, this.brokerAddresses);
@@ -188,14 +189,14 @@ public class KafkaStreamsTests {
 			props.put(StreamsConfig.DEFAULT_TIMESTAMP_EXTRACTOR_CLASS_CONFIG,
 					WallclockTimestampExtractor.class.getName());
 			props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, "100");
-			return new StreamsConfig(props);
+			return new KafkaStreamsConfiguration(props);
 		}
 
 		@Bean
 		public KStream<Integer, String> kStream(StreamsBuilder kStreamBuilder) {
 			KStream<Integer, String> stream = kStreamBuilder.stream(STREAMING_TOPIC1);
 			stream.mapValues((ValueMapper<String, String>) String::toUpperCase)
-					.mapValues((ValueMapper<String, Foo>) Foo::new)
+					.mapValues(Foo::new)
 					.through(FOOS, Produced.with(Serdes.Integer(), new JsonSerde<Foo>() {
 
 					}))

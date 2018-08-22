@@ -12,7 +12,7 @@ Simply add a `NewTopic` `@Bean` for each topic to the application context.
 public KafkaAdmin admin() {
     Map<String, Object> configs = new HashMap<>();
     configs.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
-            StringUtils.arrayToCommaDelimitedString(kafkaEmbedded().getBrokerAddresses()));
+            StringUtils.arrayToCommaDelimitedString(embeddedKafka().getBrokerAddresses()));
     return new KafkaAdmin(configs);
 }
 
@@ -371,7 +371,6 @@ public class KRequestingApplication {
     public ApplicationRunner runner(ReplyingKafkaTemplate<String, String, String> template) {
         return args -> {
             ProducerRecord<String, String> record = new ProducerRecord<>("kRequests", "foo");
-            record.headers().add(new RecordHeader(KafkaHeaders.REPLY_TOPIC, "kReplies".getBytes()));
             RequestReplyFuture<String, String, String> replyFuture = template.sendAndReceive(record);
             SendResult<String, String> sendResult = replyFuture.getSendFuture().get();
             System.out.println("Sent ok: " + sendResult.getRecordMetadata());
@@ -384,12 +383,14 @@ public class KRequestingApplication {
     public ReplyingKafkaTemplate<String, String, String> kafkaTemplate(
             ProducerFactory<String, String> pf,
             KafkaMessageListenerContainer<String, String> replyContainer) {
+
         return new ReplyingKafkaTemplate<>(pf, replyContainer);
     }
 
     @Bean
     public KafkaMessageListenerContainer<String, String> replyContainer(
             ConsumerFactory<String, String> cf) {
+
         ContainerProperties containerProperties = new ContainerProperties("kReplies");
         return new KafkaMessageListenerContainer<>(cf, containerProperties);
     }
@@ -407,7 +408,7 @@ public class KRequestingApplication {
 }
 ----
 
-In addition to the reply topic header set by user code, the template sets a header `KafkaHeaders.CORRELATION_ID` which must be echoed back by the server side.
+The template sets a header `KafkaHeaders.CORRELATION_ID` which must be echoed back by the server side.
 
 In this case, simple `@KafkaListener` application responds:
 
@@ -444,9 +445,23 @@ public class KReplyingApplication {
 
 The `@KafkaListener` infrastructure echoes the correlation id and determines the reply topic.
 
-See <<annotation-send-to>> for more information about sending replies; in this case we use the default header `KafKaHeaders.REPLY_TOPIC` to indicate which topic the reply goes to.
+See <<annotation-send-to>> for more information about sending replies; the template uses the default header `KafKaHeaders.REPLY_TOPIC` to indicate which topic the reply goes to.
 
-IMPORTANT: If you have multiple client instances, each will need a dedicated reply topic for each instance.
+Starting with version 2.2, the template will attempt to detect the reply topic/partition from the configured reply container.
+If the container is configured to listen to a single topic or a single `TopicPartitionInitialOffset`, it will be used to set the reply headers.
+If the container is configured otherwise, the user must set up the reply header(s); in this case, an INFO log is written during initialization.
+
+[source, java]
+----
+record.headers().add(new RecordHeader(KafkaHeaders.REPLY_TOPIC, "kReplies".getBytes()));
+----
+
+When configuring with a single reply `TopicPartitionInitialOffset`, you can use the same reply topic for multiple templates, as long as each instance listens on a different partition.
+When configuring with a single reply topic, each instance must use a different `group.id` - in this case, all instances will receive each reply, but only the instance that sent the request will find the correlation id.
+This may be useful for auto-scaling, but with the overhead of additional network traffic and the small cost of discarding each unwanted reply.
+When using this setting, it is recommended that you set the template's `sharedReplyTopic` to true, which will reduce the logging level of unexpected replies to DEBUG instead of the default ERROR.
+
+IMPORTANT: If you have multiple client instances, and you don't configure them as discussed in the paragraphe above, each instance will need a dedicated reply topic.
 An alternative is to set the `KafkaHeaders.REPLY_PARTITION` and use a dedicated partition for each instance; the `Header` contains a 4 byte int (Big-endian).
 The server must use this header to route the reply to the correct topic (`@KafkaListener` does this).
 In this case, though, the reply container must not use Kafka's group management feature and must be configured to listen on a fixed partition (using a `TopicPartitionInitialOffset` in its `ContainerProperties` constructor).
@@ -762,8 +777,22 @@ public class KafkaConfig {
 Notice that to set container properties, you must use the `getContainerProperties()` method on the factory.
 It is used as a template for the actual properties injected into the container.
 
-Starting with _version 2.1.1_, it is now possible to set the `client.id` property for consumers created by the annotation.
+Starting with version 2.1.1, it is now possible to set the `client.id` property for consumers created by the annotation.
 The `clientIdPrefix` is suffixed with `-n` where `n` is an integer representing the container number when using concurrency.
+
+Starting with version 2.2, you can now override the container factory's `concurrency` and `autoStartup` properties using properties on the annotation itself.
+The properties can be simple values, property placeholders or SpEL expressions.
+
+====
+[source, java]
+----
+@KafkaListener(id = "myListener", topics = "myTopic",
+        autoStartup = "${listen.auto.start:true}", concurrency = "${listen.concurrency:3}")
+public void listen(String data) {
+    ...
+}
+----
+====
 
 You can also configure POJO listeners with explicit topics and partitions (and, optionally, their initial offsets):
 
@@ -1171,6 +1200,22 @@ public KafkaTemplate<String, String> myReplyingTemplate() {
 }
 ----
 
+IMPORTANT: If the listener method returns `Message<?>` or `Collection<Message<?>>`, the listener method is responsible for setting up the message headers for the reply; for example, when handling a request from a `ReplyingKafkaTemplate`, you might do the following:
+
+[source, java]
+----
+@KafkaListener(id = "messageReturned", topics = "someTopic")
+public Message<?> listen(String in, @Header(KafkaHeaders.REPLY_TOPIC) byte[] replyTo,
+        @Header(KafkaHeaders.CORRELATION_ID) byte[] correlation) {
+    return MessageBuilder.withPayload(in.toUpperCase())
+            .setHeader(KafkaHeaders.TOPIC, replyTo)
+            .setHeader(KafkaHeaders.MESSAGE_KEY, 42)
+            .setHeader(KafkaHeaders.CORRELATION_ID, correlation)
+            .setHeader("someOtherHeader", "someValue")
+            .build();
+}
+----
+
 When using request/reply semantics, the target partition can be requested by the sender.
 
 NOTE: You can annotate a `@KafkaListener` method with `@SendTo` even if no result is returned.
@@ -1430,6 +1475,24 @@ public ConcurrentMessageListenerContainer<String, String>(
 IMPORTANT: Containers created this way are not added to the endpoint registry.
 They should be created as `@Bean` s so that they will be registered with the application context.
 
+[[thread-safety]]
+===== Thread Safety
+
+When using a concurrent message listener container, a single listener instance is invoked on all consumer threads.
+Listeners, therefore, need to be thread-safe; and it is preferable to use stateless listeners.
+If it is not possible to make your listener thread-safe, or adding synchronization would significantly reduce the benefit of adding concurreny, there are several techniques you can use.
+
+. Use `n` containers with `concurrency=1` with a prototype scoped `MessageListener` bean so each container gets its own instance (this is not possible when using `@KafkaListener`).
+. Keep the state in `ThreadLocal<?>` s.
+. Have the singleton listener delegate to a bean that is declared in `SimpleThreadScope` or similar.
+
+To facilitate cleaning up thread state (for 2 and 3), starting with version 2.2, the listener container will publish `ConsumerStoppedEvent` s when each thread exits.
+Consume these events with an `ApplicationListener` or `@EventListener` method to remove `ThreadLocal<?>` s, or `remove()` thread-scoped beans from the scope.
+Note that `SimpleThreadScope` does not destroy beans that have a destruction interface (e.g. `DisposableBean`) so you should `destroy()` the instance yourself.
+
+IMPORTANT: By default, the application context's event multicaster invokes event listeners on the calling thread.
+If you change the multicaster to use an async executor, thread cleanup will not be effective.
+
 [[pause-resume]]
 ==== Pausing/Resuming Listener Containers
 
@@ -1444,6 +1507,65 @@ Starting with _version 2.1.5_, you can call `isPauseRequested()` to see if `paus
 However, the consumers might not have actually paused yet; `isConsumerPaused()` will return true if all `Consumer` s have actually paused.
 
 In addition, also since _2.1.5_, `ConsumerPausedEvent` s and `ConsumerResumedEvent` s are published with the container as the `source` property and the `TopicPatition` s involved in the `partitions` s property.
+
+This simple Spring Boot application demonstrates using the container registry to get a reference to a `@KafkaListener` method's container and pausing/resuming its consumers, as well as receiving the corresponding events.
+
+[source, java]
+----
+@SpringBootApplication
+public class Application implements ApplicationListener<KafkaEvent> {
+
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args).close();
+    }
+
+    @Override
+    public void onApplicationEvent(KafkaEvent event) {
+        System.out.println(event);
+    }
+
+    @Bean
+    public ApplicationRunner runner(KafkaListenerEndpointRegistry registry,
+            KafkaTemplate<String, String> template) {
+        return args -> {
+            template.send("pause.resume.topic", "foo");
+            Thread.sleep(10_000);
+            System.out.println("pausing");
+            registry.getListenerContainer("pause.resume").pause();
+            Thread.sleep(10_000);
+            template.send("pause.resume.topic", "bar");
+            Thread.sleep(10_000);
+            System.out.println("resuming");
+            registry.getListenerContainer("pause.resume").resume();
+            Thread.sleep(10_000);
+        };
+    }
+
+    @KafkaListener(id = "pause.resume", topics = "pause.resume.topic")
+    public void listen(String in) {
+        System.out.println(in);
+    }
+
+    @Bean
+    public NewTopic topic() {
+        return new NewTopic("pause.resume.topic", 2, (short) 1);
+    }
+
+}
+----
+
+With results:
+
+[source]
+----
+partitions assigned: [pause.resume.topic-1, pause.resume.topic-0]
+foo
+pausing
+ConsumerPausedEvent [partitions=[pause.resume.topic-1, pause.resume.topic-0]]
+resuming
+ConsumerResumedEvent [partitions=[pause.resume.topic-1, pause.resume.topic-0]]
+bar
+----
 
 [[serdes]]
 ==== Serialization/Deserialization and Message Conversion
@@ -1464,13 +1586,12 @@ props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, IntegerSerializer.class);
 props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
 ----
 
-for more complex or particular cases, the `KafkaConsumer`, and therefore `KafkaProducer`, provides overloaded
+For more complex or particular cases, the `KafkaConsumer`, and therefore `KafkaProducer`, provides overloaded
 constructors to accept `(De)Serializer` instances for `keys` and/or `values`, respectively.
 
-To meet this API, the `DefaultKafkaProducerFactory` and `DefaultKafkaConsumerFactory` also provide properties to allow
-to inject a custom `(De)Serializer` to target `Producer`/`Consumer`.
+Using this API, the `DefaultKafkaProducerFactory` and `DefaultKafkaConsumerFactory` also provide properties (via constructors or setter methods) to inject custom `(De)Serializer` s to the target `Producer`/`Consumer`.
 
-For this purpose, Spring for Apache Kafka also provides `JsonSerializer`/`JsonDeserializer` implementations based on the
+Spring for Apache Kafka also provides `JsonSerializer`/`JsonDeserializer` implementations based on the
 Jackson JSON object mapper.
 The `JsonSerializer` is quite simple and just allows writing any Java object as a JSON `byte[]`, the `JsonDeserializer`
 requires an additional `Class<?> targetType` argument to allow the deserialization of a consumed `byte[]` to the proper target
@@ -1489,9 +1610,77 @@ Starting with _version 2.1_, type information can be conveyed in record `Headers
 In addition, the serializer/deserializer can be configured using Kafka properties.
 
 - `JsonSerializer.ADD_TYPE_INFO_HEADERS` (default `true`); set to `false` to disable this feature on the `JsonSerializer` (sets the `addTypeInfo` property).
+- `JsonSerializer.TYPE_MAPPINGS` (default `empty`); see below.
 - `JsonDeserializer.KEY_DEFAULT_TYPE`; fallback type for deserialization of keys if no header information is present.
 - `JsonDeserializer.VALUE_DEFAULT_TYPE`; fallback type for deserialization of values if no header information is present.
 - `JsonDeserializer.TRUSTED_PACKAGES` (default `java.util`, `java.lang`); comma-delimited list of package patterns allowed for deserialization; `*` means deserialize all.
+- `JsonDeserializer.TYPE_MAPPINGS` (default `empty`); see below.
+
+**Mapping Types**
+
+Starting with version 2.2, you can now provide type mappings using the properties in the above list; previously you had to customize the type mapper within the serializer, deserializer.
+Mappings consist of a comma-delimited list of `token:className` pairs; on outbound, the payload's class name is mapped to the corresponding token and, on inbound, the token in the type header is mapped to the corresponding class name.
+
+For example:
+
+====
+[source, java]
+----
+senderProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
+senderProps.put(JsonSerializer.TYPE_MAPPINGS, "foo:com.myfoo.Foo, bar:com.mybar.bar");
+...
+consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+consumerProps.put(JsonDeSerializer.TYPE_MAPPINGS, "foo:com.yourfoo.Foo, bar:com.yourbar.bar");
+----
+====
+
+Of course, the corresponding objects must be compatible.
+
+https://docs.spring.io/spring-boot/docs/current/reference/html/boot-features-messaging.html#boot-features-kafka[Spring Boot], these properties can be provided in the `application.properties` (or yaml) file:
+
+====
+[source]
+----
+spring.kafka.producer.value-serializer=org.springframework.kafka.support.serializer.JsonSerializer
+spring.kafka.producer.properties.spring.json.type.mapping=foo:com.myfoo.Foo,bar:com.mybar.Bar
+----
+====
+
+
+IMPORTANT: Only simple configuration can be performed with properties; for more advanced configuration (such as using a custom `ObjectMapper` in the serializer/deserializer), you should use the producer/consumer factory constructors that accept a pre-built serializer and deserializer. For example, with Spring Boot, to override the default factories:
+
+[source, java]
+----
+@Bean
+public ConsumerFactory<Foo, Bar> kafkaConsumerFactory(KafkaProperties properties,
+    JsonDeserializer customDeserializer) {
+
+    return new DefaultKafkaConsumerFactory<>(properties.buildConsumerProperties(),
+        customDeserializer, customDeserializer);
+}
+
+@Bean
+public ProducererFactory<Foo, Bar> kafkaProducerFactory(KafkaProperties properties,
+    JsonSserializer customSerializer) {
+
+    return new DefaultKafkaConsumerFactory<>(properties.buildProducerProperties(),
+        customSerializer, customSerializer);
+}
+----
+
+Setters are also provided, as an alternative to using these constructors.
+
+Starting with version 2.2, you can explicitly configure the deserializer to use the supplied target type and ignore type information in headers, using one of the overloaded constructors that have a boolean `useHeadersIfPresent` (which is `true` by default):
+
+====
+[source, java]
+----
+DefaultKafkaConsumerFactory<Integer, Foo1> cf = new DefaultKafkaConsumerFactory<>(props,
+        new IntegerDeserializer(), new JsonDeserializer<>(Foo1.class, false));
+----
+====
+
+===== Spring Messaging Message Conversion
 
 Although the `Serializer`/`Deserializer` API is quite simple and flexible from the low-level Kafka `Consumer` and
 `Producer` perspective, you might need more flexibility at the Spring Messaging level, either when using `@KafkaListener` or <<si-kafka,Spring Integration>>.
@@ -1527,8 +1716,36 @@ With a class-level `@KafkaListener`, the payload type is used to select which `@
 ====
 
 NOTE: When using the `StringJsonMessageConverter`, you should use a `StringDeserializer` in the kafka consumer configuration and `StringSerializer` in the kafka producer configuration, when using Spring Integration or the `KafkaTemplate.send(Message<?> message)` method.
-When using the `BytesJsonMessageConverter`, you should use a `BytesDeserializer` in the kafka consumer configuration and `BytesSerializer` in the kafka producer configuration, when using Spring Integration or the `KafkaTemplate.send(Message<?> message)` method.
+When using the `BytesJsonMessageConverter`, you should use a `BytesDeserializer` in the kafka consumer configuration and `BytesSerializer` in the kafka producer configuration, when using Spring Integration or the `KafkaTemplate.send(Message<?> message)` method (see <<kafka-template>>).
 Generally, the `BytesJsonMessageConverter` is more efficient because it avoids a `String` to/from `byte[]` conversion.
+
+[[error-handling-deserializer]]
+===== ErrorHandlingDeserializer
+
+When a deserializer fails to deserialize a message, Spring has no way to handle the problem because it occurs before the `poll()` returns.
+To solve this problem, version 2.2 introduced the `ErrorHandlingDeserializer`.
+This deserializer delegates to a real deserializer (key or value).
+If the delegate fails to deserialize the record content, the `ErrorHandlingDeserializer` returns a `DeserializationException` instead, containing the cause and raw bytes.
+When using a record-level `MessageListener`, if either the key or value contains a `DeserializationException`, the container's `ErrorHandler` is called with the failed `ConsumerRecord`.
+When using a `BatchMessageListener`, the failed record is passed to the application along with the remaining records in the batch, so it is the responsibility of the application listener to check whether the key or value in a particular record is a `DeserializationException`.
+
+You can use the `DefaultKafkaConsumerFactory` constructor that takes key and value `Deserializer` objects and wire in appropriate `ErrorHandlingDeserializer` configured with the proper delegates.
+Alternatively, you can use consumer configuration properties which are used by the `ErrorHandlingDeserializer` to instantiate the delegates.
+The property names are `ErrorHandlingDeserializer.KEY_DESERIALIZER_CLASS` and `ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS`; the property value can be a class or class name.
+For example:
+
+[source, java]
+----
+... // other props
+props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+props.put(ErrorHandlingDeserializer.KEY_DESERIALIZER_CLASS, JsonDeserializer.class);
+props.put(JsonDeserializer.KEY_DEFAULT_TYPE, "com.example.MyKey")
+props.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, JsonDeserializer.class.getName());
+props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, "com.example.MyValue")
+props.put(JsonDeserializer.TRUSTED_PACKAGES, "com.example")
+return new DefaultKafkaConsumerFactory<>(props);
+----
 
 [[payload-conversion-with-batch]]
 ===== Payload Conversion with Batch Listeners
@@ -1683,8 +1900,10 @@ With the batch converter, the converted headers are available in the `KafkaHeade
 
 If the converter has no converter (either because Jackson is not present, or it is explicitly set to `null`), the headers from the consumer record are provided unconverted in the `KafkaHeaders.NATIVE_HEADERS` header (a `Headers` object, or a `List<Headers>` in the case of the batch converter, where the position in the list corresponds to the data position in the payload).
 
-IMPORTANT: The Jackson `ObjectMapper` (even if provided) will be enhanced to support deserializing `org.springframework.util.MimeType` objects, often used in the `spring-messaging` `contentType` header.
-If you don't wish your mapper to be enhanced in this way, for some reason, you should subclass the `DefaultKafkaHeaderMapper` and override `getObjectMapper()` to return your mapper.
+IMPORTANT: Certain types are not suitable for JSON serialization and a simple `toString()` serialization might be preferred for these types.
+The `DefaultKafkaHeaderMapper` has a method `addToStringClasses()` where you can supply names of classes that should be treated this way for outbound mapping.
+During inbound mapping, they will be mapped as `String`.
+By default, just `org.springframework.util.MimeType` and `org.springframework.http.MediaType` are mapped this way.
 
 ==== Null Payloads and Log Compaction 'Tombstone' Records
 
@@ -1866,6 +2085,7 @@ Similar to the `@KafkaListener` error handlers, you can reset the offsets as nee
 
 NOTE: Unlike the listener-level error handlers, however, you should set the container property `ackOnError` to false when making adjustments; otherwise any pending acks will be applied after your repositioning.
 
+[[seek-to-current]]
 ===== Seek To Current Container Error Handlers
 
 If an `ErrorHandler` implements `RemainingRecordsErrorHandler`, the error handler is provided with the failed record and any unprocessed records retrieved by the previous `poll()`.
@@ -1909,7 +2129,26 @@ The next `poll()` will return the 3 unprocessed records.
 
 If the `AckMode` was `BATCH`, the container commits the offsets for the first 2 partitions before calling the error handler.
 
+Starting with version 2.2, the `SeekToCurrentErrorHandler` can now recover (skip) a record that keeps failing.
+By default, after 10 failures, the failed record will be logged (ERROR).
+You can configure the handler with a custom recoverer (`BiConsumer`) and/or max failures.
+
+====
+[source, java]
+----
+SeekToCurrentErrorHandler errorHandler =
+    new SeekToCurrentErrorHandler((record, exception) -> {
+        // recover after 3 failures - e.g. send to a dead-letter topic
+    }, 3);
+----
+====
+
+Also see <<dead-letters>>.
+
+When using transactions, similar functionality is provided by the `DefaultAfterRollbackProcessor`; see <<after-rollback>>.
+
 The `SeekToCurrentBatchErrorHandler` seeks each partition to the first record in each partition in the batch so the whole batch is replayed.
+This error handler does not support recovery because the framework cannot know which message in the batch is failing.
 
 After seeking, an exception wrapping the `ListenerExecutionFailedException` is thrown.
 This is to cause the transaction to roll back (if transactions are enabled).
@@ -1935,6 +2174,67 @@ This is achieved by performing `seek` operations in the `DefaultAfterRollbackPro
 With a batch listener, the entire batch of records will be reprocessed (the container has no knowledge of which record in the batch failed).
 To modify this behavior, configure the listener container with a custom `AfterRollbackProcessor`.
 For example, with a record-based listener, you might want to keep track of the failed record and give up after some number of attempts - perhaps by publishing it to a dead-letter topic.
+
+Starting with version 2.2, the `DefaultAfterRollbackProcessor` can now recover (skip) a record that keeps failing.
+By default, after 10 failures, the failed record will be logged (ERROR).
+You can configure the processor with a custom recoverer (`BiConsumer`) and/or max failures.
+
+====
+[source, java]
+----
+AfterRollbackProcessor<String, String> processor =
+    new DefaultAfterRollbackProcessor((record, exception) -> {
+        // recover after 3 failures - e.g. send to a dead-letter topic
+    }, 3);
+----
+====
+
+When not using transactions, similar functionality can be achieved by configuring a `SeekToCurrentErrorHandler`; see <<seek-to-current>>.
+
+IMPORTANT: Recovery is not possible with a batch listener since the framework has no knowledge about which record in the batch keeps failing.
+In such cases, the application listener must handle a record that keeps failing.
+
+Also see <<dead-letters>>.
+
+[[dead-letters]]
+===== Publishing Dead-Letter Records
+
+As discussed above, the `SeekToCurrentErrorHandler` and `DefaultAfterRollbackProcessor` can be configured with a record recoverer when the maximum number of failures is reached for a record.
+The framework provides the `DeadLetterPublishingRecoverer` which will publish the failed message to another topic.
+The recoverer requires a `KafkaTemplate<Object, Object>` which is used to send the record.
+It also, optionally, can be configured with a `BiFunction<ConsumerRecord<?, ?>, Exception, TopicPartition>` which is called to resolve the destination topic and partition.
+By default, the dead-letter record is sent to a topic named `<originalTopic>.DLT` (the original topic name suffixed with `.DLT`) and to the same partition as the original record.
+Therefore, when using the default resolver, the dead-letter topic must have at least as many partitions as the original topic.
+If the returned `TopicPartition` has a negative partition, the partition is not set in the `ProducerRecord` and so the partition will be selected by Kafka.
+The following is an example of wiring a custom destination resolver.
+
+====
+[source, java]
+----
+DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(template,
+        (r, e) -> {
+            if (e instanceof FooException) {
+                return new TopicPartition(r.topic() + ".Foo.failures", r.partition());
+            }
+            else {
+                return new TopicPartition(r.topic() + ".other.failures", r.partition());
+            }
+        });
+ErrorHandler errorHandler = new SeekToCurrentErrorHandler(recoverer, 3);
+----
+====
+
+The record sent to the dead-letter topic is enhanced with the following headers:
+
+* `KafkaHeaders.DLT_EXCEPTION_FQCN` - Exception class name.
+* `KafkaHeaders.DLT_EXCEPTION_STACKTRACE` - Exception stack trace.
+* `KafkaHeaders.DLT_EXCEPTION_MESSAGE` - Exception message.
+* `KafkaHeaders.DLT_ORIGINAL_TOPIC` - Original topic.
+* `KafkaHeaders.DLT_ORIGINAL_PARTITION` Original partition.
+* `KafkaHeaders.DLT_ORIGINAL_OFFSET` - Original offset.
+* `KafkaHeaders.DLT_ORIGINAL_TIMESTAMP` - Original timestamp.
+* `KafkaHeaders.DLT_ORIGINAL_TIMESTAMP_TYPE` - Original timestamp type.
+
 
 
 [[kerberos]]

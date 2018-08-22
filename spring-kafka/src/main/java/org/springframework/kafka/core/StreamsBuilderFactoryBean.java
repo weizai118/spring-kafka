@@ -17,6 +17,7 @@
 package org.springframework.kafka.core;
 
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.streams.KafkaClientSupplier;
@@ -30,6 +31,7 @@ import org.apache.kafka.streams.processor.internals.DefaultKafkaClientSupplier;
 import org.springframework.beans.factory.config.AbstractFactoryBean;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.kafka.KafkaException;
+import org.springframework.kafka.config.KafkaStreamsConfiguration;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 
@@ -56,6 +58,8 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 
 	private StreamsConfig streamsConfig;
 
+	private Properties properties;
+
 	private final CleanupConfig cleanupConfig;
 
 	private KafkaStreamsCustomizer kafkaStreamsCustomizer;
@@ -77,9 +81,10 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 	private volatile boolean running;
 
 	/**
-	 * Default constructor that creates the factory without a {@link StreamsConfig}.
-	 * It is the factory user's responsibility to properly set {@link StreamsConfig}
-	 * using {@link StreamsBuilderFactoryBean#setStreamsConfig(StreamsConfig)}
+	 * Default constructor that creates the factory without configuration
+	 * {@link Properties}. It is the factory user's responsibility to properly set
+	 * {@link Properties} using
+	 * {@link StreamsBuilderFactoryBean#setStreamsConfiguration(Properties)}.
 	 * @since 2.1.3.
 	 */
 	public StreamsBuilderFactoryBean() {
@@ -89,7 +94,9 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 	/**
 	 * Construct an instance with the supplied streams configuration.
 	 * @param streamsConfig the streams configuration.
+	 * @deprecated in favor of {@link #StreamsBuilderFactoryBean(KafkaStreamsConfiguration)}
 	 */
+	@Deprecated
 	public StreamsBuilderFactoryBean(StreamsConfig streamsConfig) {
 		this(streamsConfig, new CleanupConfig());
 	}
@@ -100,7 +107,9 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 	 * @param streamsConfig the streams configuration.
 	 * @param cleanupConfig the cleanup configuration.
 	 * @since 2.1.2.
+	 * @deprecated in favor of {@link #StreamsBuilderFactoryBean(KafkaStreamsConfiguration, CleanupConfig)}
 	 */
+	@Deprecated
 	public StreamsBuilderFactoryBean(StreamsConfig streamsConfig, CleanupConfig cleanupConfig) {
 		Assert.notNull(streamsConfig, "'streamsConfig' must not be null");
 		Assert.notNull(cleanupConfig, "'cleanupConfig' must not be null");
@@ -109,10 +118,35 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 	}
 
 	/**
+	 * Construct an instance with the supplied streams configuration and
+	 * clean up configuration.
+	 * @param streamsConfig the streams configuration.
+	 * @param cleanupConfig the cleanup configuration.
+	 * @since 2.2
+	 */
+	public StreamsBuilderFactoryBean(KafkaStreamsConfiguration streamsConfig, CleanupConfig cleanupConfig) {
+		Assert.notNull(streamsConfig, "'streamsConfig' must not be null");
+		Assert.notNull(cleanupConfig, "'cleanupConfig' must not be null");
+		this.properties = streamsConfig.asProperties();
+		this.cleanupConfig = cleanupConfig;
+	}
+
+	/**
 	 * Construct an instance with the supplied streams configuration.
 	 * @param streamsConfig the streams configuration.
+	 * @deprecated in favor of {@link #StreamsBuilderFactoryBean(KafkaStreamsConfiguration)}.
 	 */
+	@Deprecated
 	public StreamsBuilderFactoryBean(Map<String, Object> streamsConfig) {
+		this(streamsConfig, new CleanupConfig());
+	}
+
+	/**
+	 * Construct an instance with the supplied streams configuration.
+	 * @param streamsConfig the streams configuration.
+	 * @since 2.2
+	 */
+	public StreamsBuilderFactoryBean(KafkaStreamsConfiguration streamsConfig) {
 		this(streamsConfig, new CleanupConfig());
 	}
 
@@ -122,7 +156,9 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 	 * @param streamsConfig the streams configuration.
 	 * @param cleanupConfig the cleanup configuration.
 	 * @since 2.1.2.
+	 * @deprecated in favor of {@link #StreamsBuilderFactoryBean(KafkaStreamsConfiguration, CleanupConfig)}.
 	 */
+	@Deprecated
 	public StreamsBuilderFactoryBean(Map<String, Object> streamsConfig, CleanupConfig cleanupConfig) {
 		Assert.notNull(streamsConfig, "'streamsConfig' must not be null");
 		Assert.notNull(cleanupConfig, "'cleanupConfig' must not be null");
@@ -137,12 +173,29 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 	 */
 	public void setStreamsConfig(StreamsConfig streamsConfig) {
 		Assert.notNull(streamsConfig, "'streamsConfig' must not be null");
+		Assert.isNull(this.properties, "Cannot have both streamsConfig and streams configuration properties");
 		this.streamsConfig = streamsConfig;
 	}
 
 	@Nullable
 	public StreamsConfig getStreamsConfig() {
 		return this.streamsConfig;
+	}
+
+	/**
+	 * Set {@link StreamsConfig} on this factory.
+	 * @param streamsConfig the streams configuration.
+	 * @since 2.2
+	 */
+	public void setStreamsConfiguration(Properties streamsConfig) {
+		Assert.notNull(streamsConfig, "'streamsConfig' must not be null");
+		Assert.isNull(this.streamsConfig, "Cannot have both streamsConfig and streams configuration properties");
+		this.properties = streamsConfig;
+	}
+
+	@Nullable
+	public Properties getStreamsConfiguration() {
+		return this.properties;
 	}
 
 	public void setClientSupplier(KafkaClientSupplier clientSupplier) {
@@ -191,7 +244,8 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 	@Override
 	protected StreamsBuilder createInstance() throws Exception {
 		if (this.autoStartup) {
-			Assert.notNull(this.streamsConfig, "'streamsConfig' must not be null");
+			Assert.state(this.streamsConfig != null || this.properties != null,
+					"'streamsConfig' or streams configuration properties must not be null");
 		}
 		return new StreamsBuilder();
 	}
@@ -217,16 +271,23 @@ public class StreamsBuilderFactoryBean extends AbstractFactoryBean<StreamsBuilde
 		}
 	}
 
+	@SuppressWarnings("deprecation")
 	@Override
 	public synchronized void start() {
 		if (!this.running) {
 			try {
-				Assert.notNull(this.streamsConfig, "'streamsConfig' must not be null");
+				Assert.state(this.streamsConfig != null || this.properties != null,
+						"'streamsConfig' or streams configuration properties must not be null");
 				Topology topology = getObject().build();
 				if (logger.isDebugEnabled()) {
 					logger.debug(topology.describe());
 				}
-				this.kafkaStreams = new KafkaStreams(topology, this.streamsConfig, this.clientSupplier);
+				if (this.properties != null) {
+					this.kafkaStreams = new KafkaStreams(topology, this.properties, this.clientSupplier);
+				}
+				else {
+					this.kafkaStreams = new KafkaStreams(topology, this.streamsConfig, this.clientSupplier);
+				}
 				this.kafkaStreams.setStateListener(this.stateListener);
 				this.kafkaStreams.setGlobalStateRestoreListener(this.stateRestoreListener);
 				this.kafkaStreams.setUncaughtExceptionHandler(this.uncaughtExceptionHandler);
